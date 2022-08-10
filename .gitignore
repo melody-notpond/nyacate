@@ -1,2 +1,4 @@
 nyacate
 .credentials
+compile_commands.json
+.cache/

@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS=-Wall -Wextra -g
-CLIBS=-lstrophe -lnotcurses
+CLIBS=-lstrophe -lnotcurses -lnotcurses-core
 CODE=src/
 
 all: $(CODE)*.c
