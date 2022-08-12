@@ -5,17 +5,36 @@
 
 #include "vector.h"
 
+typedef struct {
+    char* message;
+    struct nctablet* tablet;
+} Message;
+
+void destroy_message(Message* message) {
+    free(message->message);
+}
+
 struct UserData {
     xmpp_ctx_t* context;
-    //Vector* messages;
-    struct ncplane* plane;
+    Vector* messages;
+    struct ncreel* messages_reel;
 };
+
+int draw_message(struct nctablet* tablet, bool drawfromtop) {
+    (void) drawfromtop;
+
+    struct ncplane* plane = nctablet_plane(tablet);
+    char* body_text = nctablet_userptr(tablet);
+    ncplane_erase(plane);
+    ncplane_putstr(plane, body_text);
+    return 1;
+}
 
 int message_handler(xmpp_conn_t* connection, xmpp_stanza_t* stanza, void* userdata) {
     (void) connection;
     struct UserData* data = (struct UserData*) userdata;
-    xmpp_ctx_t* context = data->context;
-    struct ncplane* message = data->plane;
+    Vector* messages = data->messages;
+    struct ncreel* messages_reel = data->messages_reel;
 
     xmpp_stanza_t* body = xmpp_stanza_get_child_by_name(stanza, "body");
     if (body == NULL)
@@ -26,11 +45,15 @@ int message_handler(xmpp_conn_t* connection, xmpp_stanza_t* stanza, void* userda
         return 1;
 
     char* body_text = xmpp_stanza_get_text(body);
-    ncplane_erase(message);
-    ncplane_putstr(message, body_text);
-    xmpp_free(context, body_text);
+    struct nctablet* tablet = ncreel_add(messages_reel, vector_len(messages) ? ((Message*) vector_get(messages, vector_len(messages) - 1))->tablet : NULL, NULL, draw_message, body_text);
+    ncreel_next(messages_reel);
+    Message message = {
+        .message = body_text,
+        .tablet = tablet,
+    };
+    vector_push(messages, &message);
 
-    return 0;
+    return 1;
 }
 
 void connection_handler(xmpp_conn_t* connection, xmpp_conn_event_t status, int error, xmpp_stream_error_t* stream_error, void* userdata) {
@@ -52,16 +75,6 @@ int resize_input_box(struct ncplane* input) {
     unsigned int y, x;
     ncplane_dim_yx(parent, &y, &x);
     return ncplane_resize(input, 0, 0, 0, 0, 0, y - 1, 1, x);
-}
-
-typedef struct {
-    char* message;
-    struct ncplane* plane;
-} Message;
-
-void destroy_message(Message* message) {
-    free(message->message);
-    //ncplane_destroy(message->plane);
 }
 
 int main() {
@@ -89,13 +102,13 @@ int main() {
         .flags = NCREADER_OPTION_CURSOR | NCREADER_OPTION_HORSCROLL,
     });
     ncreader_clear(reader);
-
-    struct ncplane* message = ncplane_create(stdplane, &(struct ncplane_options) {
-        .x = 0,
-        .y = 0,
-        .rows = 1,
-        .cols = 50,
+    plane = ncplane_create(stdplane, &(struct ncplane_options) {
+            .x = 0,
+            .y = 0,
+            .rows = y - 1,
+            .cols = x,
     });
+    struct ncreel* messages_reel = ncreel_create(plane, &(ncreel_options) {});
 
     notcurses_render(nc);
 
@@ -128,14 +141,16 @@ int main() {
 
     xmpp_conn_set_jid(connection, username);
     xmpp_conn_set_pass(connection, password);
+
+    Vector* messages = create_vector(Message);
     struct UserData data = {
         .context = context,
-        .plane = message,
+        .messages = messages,
+        .messages_reel = messages_reel,
     };
+
     if (xmpp_connect_client(connection, NULL, 0, connection_handler, &data) != XMPP_EOK)
         goto cleanup;
-
-    //Vector* messages = create_vector(Message);
 
     while (true) {
         xmpp_run_once(context, 10);
@@ -164,10 +179,8 @@ int main() {
         notcurses_render(nc);
     }
 
-    //destroy_vector(messages, destroy_message);
-    ncplane_destroy(message);
-
 cleanup:
+    destroy_vector(messages, destroy_message);
     xmpp_conn_release(connection);
     xmpp_ctx_free(context);
     xmpp_shutdown();
