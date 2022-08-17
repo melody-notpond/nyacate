@@ -6,12 +6,18 @@
 #include "vector.h"
 
 typedef struct {
+    char* sender;
     char* message;
+
     struct nctablet* tablet;
+    xmpp_ctx_t* context;
 } Message;
 
-void destroy_message(Message* message) {
-    free(message->message);
+void destroy_message(Message** message_ptr) {
+    Message* message = *message_ptr;
+    xmpp_free(message->context, message->sender);
+    xmpp_free(message->context, message->message);
+    free(message);
 }
 
 struct UserData {
@@ -24,15 +30,29 @@ int draw_message(struct nctablet* tablet, bool drawfromtop) {
     (void) drawfromtop;
 
     struct ncplane* plane = nctablet_plane(tablet);
-    char* body_text = nctablet_userptr(tablet);
-    ncplane_erase(plane);
-    ncplane_putstr(plane, body_text);
-    return 1;
+    Message* message = nctablet_userptr(tablet);
+    struct ncplane* sender = ncplane_create(plane, &(struct ncplane_options) {
+        .x = 0,
+        .y = 0,
+        .rows = 1,
+        .cols = 20,
+    });
+    ncplane_putstr(sender, message->sender);
+    unsigned int width = ncplane_dim_x(plane);
+    struct ncplane* message_plane = ncplane_create(plane, &(struct ncplane_options) {
+        .x = 2,
+        .y = 1,
+        .rows = 1,
+        .cols = width - 2,
+    });
+    ncplane_putstr(message_plane, message->message);
+    return 2;
 }
 
 int message_handler(xmpp_conn_t* connection, xmpp_stanza_t* stanza, void* userdata) {
     (void) connection;
     struct UserData* data = (struct UserData*) userdata;
+    xmpp_ctx_t* context = data->context;
     Vector* messages = data->messages;
     struct ncreel* messages_reel = data->messages_reel;
 
@@ -45,14 +65,17 @@ int message_handler(xmpp_conn_t* connection, xmpp_stanza_t* stanza, void* userda
         return 1;
 
     char* body_text = xmpp_stanza_get_text(body);
-    struct nctablet* tablet = ncreel_add(messages_reel, vector_len(messages) ? ((Message*) vector_get(messages, vector_len(messages) - 1))->tablet : NULL, NULL, draw_message, body_text);
-    ncreel_next(messages_reel);
-    Message message = {
+    const char* from = xmpp_stanza_get_from(stanza);
+    Message *message = malloc(sizeof(Message));
+    *message = (Message) {
+        .sender = (char*) from,
         .message = body_text,
-        .tablet = tablet,
+        .context = context,
     };
+    struct nctablet* tablet = ncreel_add(messages_reel, vector_len(messages) ? (*(Message**) vector_get(messages, vector_len(messages) - 1))->tablet : NULL, NULL, draw_message, message);
+    ncreel_next(messages_reel);
+    message->tablet = tablet;
     vector_push(messages, &message);
-
     return 1;
 }
 
@@ -95,9 +118,6 @@ int main() {
             .cols = x,
             .resizecb = resize_input_box,
     });
-    nccell cell = {};
-    nccell_set_bg_rgb8(&cell, 0xff, 0xff, 0xff);
-    ncplane_base(plane, &cell);
     struct ncreader* reader = ncreader_create(plane, &(ncreader_options) {
         .flags = NCREADER_OPTION_CURSOR | NCREADER_OPTION_HORSCROLL,
     });
@@ -108,9 +128,9 @@ int main() {
             .rows = y - 1,
             .cols = x,
     });
-    struct ncreel* messages_reel = ncreel_create(plane, &(ncreel_options) {});
-
-    notcurses_render(nc);
+    struct ncreel* messages_reel = ncreel_create(plane, &(ncreel_options) {
+        .tabletmask = NCBOXMASK_TOP | NCBOXMASK_BOTTOM | NCBOXMASK_LEFT | NCBOXMASK_RIGHT,
+    });
 
     xmpp_initialize();
     xmpp_ctx_t* context = xmpp_ctx_new(NULL, NULL);
@@ -142,7 +162,7 @@ int main() {
     xmpp_conn_set_jid(connection, username);
     xmpp_conn_set_pass(connection, password);
 
-    Vector* messages = create_vector(Message);
+    Vector* messages = create_vector(Message*);
     struct UserData data = {
         .context = context,
         .messages = messages,
@@ -180,13 +200,15 @@ int main() {
     }
 
 cleanup:
+    ncreader_destroy(reader, NULL);
+    ncreel_destroy(messages_reel);
+    //notcurses_mice_disable(nc);
+    notcurses_leave_alternate_screen(nc);
+    notcurses_stop(nc);
+
     destroy_vector(messages, destroy_message);
     xmpp_conn_release(connection);
     xmpp_ctx_free(context);
     xmpp_shutdown();
 
-    ncreader_destroy(reader, NULL);
-    //notcurses_mice_disable(nc);
-    notcurses_leave_alternate_screen(nc);
-    notcurses_stop(nc);
 }
